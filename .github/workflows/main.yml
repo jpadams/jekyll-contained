@@ -1,84 +1,82 @@
+# This workflow will build and push a new container image to Amazon ECR,
+# and then will deploy a new task definition to Amazon ECS, on every push
+# to the master branch.
+#
+# To use this workflow, you will need to complete the following set-up steps:
+#
+# 1. Create an ECR repository to store your images.
+#    For example: `aws ecr create-repository --repository-name my-ecr-repo --region us-east-2`.
+#    Replace the value of `ECR_REPOSITORY` in the workflow below with your repository's name.
+#    Replace the value of `aws-region` in the workflow below with your repository's region.
+#
+# 2. Create an ECS task definition, an ECS cluster, and an ECS service.
+#    For example, follow the Getting Started guide on the ECS console:
+#      https://us-east-2.console.aws.amazon.com/ecs/home?region=us-east-2#/firstRun
+#    Replace the values for `service` and `cluster` in the workflow below with your service and cluster names.
+#
+# 3. Store your ECS task definition as a JSON file in your repository.
+#    The format should follow the output of `aws ecs register-task-definition --generate-cli-skeleton`.
+#    Replace the value of `task-definition` in the workflow below with your JSON file's name.
+#    Replace the value of `container-name` in the workflow below with the name of the container
+#    in the `containerDefinitions` section of the task definition.
+#
+# 4. Store an IAM user access key in GitHub Actions secrets named `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
+#    See the documentation for each action used below for the recommended IAM policies for this IAM user,
+#    and best practices on handling the access key credentials.
+
 on:
-  [push, pull_request]
+  push:
+    branches:
+      - master
 
-name: Build
-
-env:
-  AWS_REGION: eu-west-1
-  CLUSTER: jekyll-contained
-  SERVICE: jekyll-contained
-  CONTAINER_IMAGE: jekyll-contained:${{ github.sha }}
+name: Deploy to Amazon ECS
 
 jobs:
-  build:
-    name: Build
+  deploy:
+    name: Deploy
     runs-on: ubuntu-latest
+
     steps:
     - name: Checkout
-      uses: actions/checkout@v1.0.0
+      uses: actions/checkout@v1
 
-    - name: Setup AWS
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-west-1
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+
+    - name: Build, tag, and push image to Amazon ECR
+      id: build-image
       env:
-        AWS_HOME: ${{ runner.temp }}/.aws
-        AWS_CONFIG_FILE: ${{ runner.temp }}/.aws/config
-        AWS_SHARED_CREDENTIALS_FILE: ${{ runner.temp }}/.aws/credentials
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        ECR_REPOSITORY: jekyll-contained
+        IMAGE_TAG: ${{ github.sha }}
       run: |
-        mkdir -p "${AWS_HOME}"
-        # ::set-env will propogate these env vars to subsequents steps in this job
-        echo "::set-env name=AWS_CONFIG_FILE,::${AWS_CONFIG_FILE}"
-        echo "::set-env name=AWS_SHARED_CREDENTIALS_FILE,::${AWS_SHARED_CREDENTIALS_FILE}"
-        aws configure set default.region $AWS_REGION
-        aws configure set default.output json
-        aws configure set aws_access_key_id ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws configure set aws_secret_access_key ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws sts get-caller-identity
+        # Build a docker container and
+        # push it to ECR so that it can
+        # be deployed to ECS.
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        echo "::set-output name=image::$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
 
-    - name: Setup ECR
-      run: |
-        # Login to AWS ECR
-        $( aws ecr get-login --region $AWS_REGION --no-include-email )
+    - name: Fill in the new image ID in the Amazon ECS task definition
+      id: task-def
+      uses: aws-actions/amazon-ecs-render-task-definition@v1
+      with:
+        task-definition: task-definition.json
+        container-name: sample-app
+        image: ${{ steps.build-image.outputs.image }}
 
-    - name: Build, tag, and push image
-      run: |
-        # Build and tag the image
-        docker build \
-          -t $CONTAINER_IMAGE \
-          -t $GITHUB_REPOSITORY:$GITHUB_SHA \
-          -t ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/$CONTAINER_IMAGE .
-        # Save the image so it can be uploaded as an artifact
-        docker save $CONTAINER_IMAGE | gzip > ./jekyll-contained.tar.gz
-        # Push image to AWS ECR
-        docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/$CONTAINER_IMAGE
-
-    - name: Render task definition
-      run: |
-        # Update task-definition with new image
-        export IMAGE=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/$CONTAINER_IMAGE
-        cat .aws/task-definition.json \
-          | jq '.containerDefinitions[0].image |= env.IMAGE' \
-          > "${RUNNER_TEMP}/task-definition.json"
-
-    - name: Register task definition
-      run: |
-        # Register the new task-definition
-        TASK_DEFINITION_ARN=$( aws ecs register-task-definition \
-          --cli-input-json file://"${RUNNER_TEMP}/task-definition.json" \
-          | jq -r '.taskDefinition.taskDefinitionArn' )
-        # Deploy new task definition to the existing service
-        aws ecs update-service --cluster $CLUSTER --service $SERVICE --task-definition $TASK_DEFINITION_ARN
-
-    - name: Wait for services to stabilize
-      run: |
-        # Wait for services to stabilize
-        aws ecs wait services-stable --cluster $CLUSTER --services $SERVICE
-
-    - name: Report public web address
-      run: |
-        # Get the task ARN
-        TASK_ARN=$( aws ecs list-tasks --cluster $CLUSTER | jq -r '.taskArns[0]' )
-        # Get the network interface id
-        NETWORK_INTERFACE_ID=$( aws ecs describe-tasks --cluster $CLUSTER --tasks $TASK_ARN \
-          | jq -r '.tasks[0].attachments[0].details[] | select(.name == "networkInterfaceId") | .value' )
-        # Get the public IP etc
-        aws ec2 describe-network-interfaces --network-interface-ids $NETWORK_INTERFACE_ID \
-          | jq -r '.NetworkInterfaces[0].Association | .PublicDnsName, .PublicIp'
+    - name: Deploy Amazon ECS task definition
+      uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+      with:
+        task-definition: ${{ steps.task-def.outputs.task-definition }}
+        service: sample-app-service
+        cluster: default
+        wait-for-service-stability: true
