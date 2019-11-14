@@ -2,7 +2,7 @@
   "containerDefinitions": [
     {
       "name": "jekyll-contained",
-      "image": "jekyll/jekyll:3",
+      "image": "",
       "portMappings": [
         {
           "containerPort": 4000,
