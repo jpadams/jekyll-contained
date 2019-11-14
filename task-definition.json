@@ -1,0 +1,22 @@
+{
+  "containerDefinitions": [
+    {
+      "name": "jekyll-contained",
+      "image": "jekyll/jekyll:3",
+      "portMappings": [
+        {
+          "containerPort": 4000,
+          "hostPort": 4000
+        }
+      ]
+    }
+  ],
+  "executionRoleArn": "ecsTaskExecutionRole",
+  "family": "jekyll-contained",
+  "requiresCompatibilities": [
+    "FARGATE"
+  ],
+  "networkMode": "awsvpc",
+  "cpu": "256",
+  "memory": "1024"
+}
