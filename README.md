@@ -19,3 +19,5 @@ docker run --name myblog --rm -p 3000:4000 -it blog  # Blog will be running at h
 ## Inspiration
 
 :sparkles: [Running Jekyll in Docker – Davy's Tech Blog](https://ddewaele.github.io/running-jekyll-in-docker/) :sparkles:
+
+woot!
